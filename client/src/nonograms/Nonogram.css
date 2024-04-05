@@ -1,0 +1,4 @@
+.nonogram-container {
+  display: flex;
+  max-height: 80vh;
+}
