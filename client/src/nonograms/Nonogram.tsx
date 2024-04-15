@@ -1,59 +1,35 @@
 import React, { useEffect, useRef, useState } from 'react';
 // import PropTypes from 'prop-types';
-import { drawLine, getContext } from './CanvasHelper';
+import {
+  drawLine,
+  drawText,
+  getContext,
+} from './canvasHelper';
+import {
+  AxisHints,
+  getInitialSolutionState,
+  calculateHints,
+} from './nonogramHelper';
+// import NonogramSolver from './NonogramSolver';
 
 export type NonogramProps = {
   width: number;
   height: number;
   imageMap: Array<Array<boolean>>;
-  highlightCorrect: boolean;
+  highlightCorrect?: boolean;
+  showSolution?: boolean;
+  solveAutomatically?: boolean;
 };
 
-type SolutionState = Array<Array<{
-  empty: boolean;
-  filled: boolean;
-  possiblyFilledBy: Array<{
-    direction: 'row' | 'col',
-    segment: number,
-    alignment: 'start' | 'end',
-  }>;
-  isCorrect: boolean;
-}>>;
-
-type Hint = {
-  length: number;
-  color: string;
-  done: boolean;
-};
-
-type AxisHints = {
-  maxLength: number;
-  hints: Array<Array<Hint>>;
-}
-
-const initialSolutionState = (imageMap: Array<Array<boolean>>): SolutionState => {
-  const solutionState: SolutionState = [];
-  imageMap.forEach((col, i) => {
-    solutionState.push([]);
-    col.forEach((row, j) => {
-      solutionState[i].push({
-        empty: false,
-        filled: imageMap[i][j],
-        possiblyFilledBy: [],
-        isCorrect: false,
-      });
-    });
-  });
-
-  return solutionState;
-};
-
-export const Nonogram = ({width, height, imageMap, highlightCorrect}: NonogramProps) => {
-  const canvasRef = useRef(null)
-  const [solutionState, setSolutionState] = useState(initialSolutionState(imageMap));
+export const Nonogram = ({width, height, imageMap, highlightCorrect = false, showSolution = false, solveAutomatically = false}: NonogramProps) => {
+  const canvasRef = useRef(null);
+  const [isMounted, setIsMounted] = useState(false);
+  // Playable area state
+  const [solutionState, setSolutionState] = useState(getInitialSolutionState(imageMap));
   const [colHints, setColHints] = useState({maxLength: 0, hints: []} as AxisHints);
   const [rowHints, setRowHints] = useState({maxLength: 0, hints: []} as AxisHints);
-  const [canvasInitialized, setCanvasInitialized] = useState(false);
+  // Dimensions
+  const [dimensionsVersion, setDimensionsVersion] = useState(0); // Shorthand dependency to redraw canvas
   const [boxSize, setBoxSize] = useState(0);
   const [xOffset, setXOffset] = useState(0);
   const [yOffset, setYOffset] = useState(0);
@@ -61,61 +37,14 @@ export const Nonogram = ({width, height, imageMap, highlightCorrect}: NonogramPr
   const [yPlaymatOffset, setYPlaymatOffset] = useState(0);
   const [drawWidth, setDrawWidth] = useState(0);
   const [drawHeight, setDrawHeight] = useState(0);
+  // // Solver
+  // const [solver, setSolver] = useState(null as NonogramSolver | null);
+  // const [solverProcess, setSolverProcess] = useState(null as NodeJS.Timer | null);
 
   // Style constants
   const fineLineWidth = 1;
   const boldLineWidth = 3;
   const margin = 5;
-
-  const calculateHints = () => {
-    const newColHints: AxisHints = {maxLength: 0, hints: []};
-    const newRowHints: AxisHints = {maxLength: 0, hints: []};
-
-    // Calculate column hints
-    imageMap.forEach((col, i) => {
-      const hints: Array<Hint> = [];
-      let currentHint = 0;
-      col.forEach((box) => {
-        if (box) {
-          currentHint++;
-        } else if (currentHint > 0) {
-          hints.push({length: currentHint, color: 'black', done: false});
-          currentHint = 0;
-        }
-      });
-      if (currentHint > 0) {
-        hints.push({length: currentHint, color: 'black', done: false});
-      }
-      if (hints.length > newColHints.maxLength) {
-        newColHints.maxLength = hints.length;
-      }
-      newColHints.hints.push(hints);
-    });
-
-    // Calculate row hints
-    imageMap[0].forEach((row, j) => {
-      const hints: Array<Hint> = [];
-      let currentHint = 0;
-      imageMap.forEach((col) => {
-        if (col[j]) {
-          currentHint++;
-        } else if (currentHint > 0) {
-          hints.push({length: currentHint, color: 'black', done: false});
-          currentHint = 0;
-        }
-      });
-      if (currentHint > 0) {
-        hints.push({length: currentHint, color: 'black', done: false});
-      }
-      if (hints.length > newRowHints.maxLength) {
-        newRowHints.maxLength = hints.length;
-      }
-      newRowHints.hints.push(hints);
-    });
-
-    setColHints(newColHints);
-    setRowHints(newRowHints);
-  };
 
   const calculateDimensions = () => {
     const canvas = canvasRef.current as HTMLCanvasElement | null;
@@ -141,6 +70,7 @@ export const Nonogram = ({width, height, imageMap, highlightCorrect}: NonogramPr
     setYOffset(newYOffset);
     setXPlaymatOffset(newXPlaymatOffset);
     setYPlaymatOffset(newYPlaymatOffset);
+    setDimensionsVersion(dimensionsVersion + 1);
 
     return true;
   };
@@ -151,13 +81,10 @@ export const Nonogram = ({width, height, imageMap, highlightCorrect}: NonogramPr
     const ctx = getContext(canvas);
     if (!canvas || !ctx) return;
 
-    ctx.clearRect(0, 0, window.innerHeight, window.innerWidth);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     // Set hint styles
-    ctx.font = `${boxSize * .6}px Arial`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    ctx.setLineDash([3, 3])
+    const font = `${boxSize * .6}px Arial`;
 
     // Draw column hints
     const hintXOffset = rowHints.maxLength * boxSize + xOffset;
@@ -166,8 +93,7 @@ export const Nonogram = ({width, height, imageMap, highlightCorrect}: NonogramPr
       const x = (i + .5) * boxSize + hintXOffset;
       hints.forEach((hint, j) => {
         const y = (j + hintYOffset) * boxSize + yOffset;
-        ctx.fillStyle = hint.color;
-        ctx.fillText(`${hint.length}`, x, y);
+        drawText({ctx, text: `${hint.length}`, position: {x, y}, font, style: hint.color});
       });
     });
     // Dividing lines
@@ -188,8 +114,7 @@ export const Nonogram = ({width, height, imageMap, highlightCorrect}: NonogramPr
       const y = j * boxSize + hintYOffset;
       hints.forEach((hint, i) => {
         const x = (i + hintXOffset) * boxSize + xOffset;
-        ctx.fillStyle = hint.color;
-        ctx.fillText(`${hint.length}`, x, y);
+        drawText({ctx, text: `${hint.length}`, position: {x, y}, font, style: hint.color});
       });
     });
     // Dividing lines
@@ -211,7 +136,15 @@ export const Nonogram = ({width, height, imageMap, highlightCorrect}: NonogramPr
       col.forEach((box, j) => {
         const x = i * boxSize + xPlaymatOffset;
         const y = j * boxSize + yPlaymatOffset;
-        if (box.isCorrect && highlightCorrect) {
+
+        // Draw background solution
+        if (showSolution && box.shouldBeFilled) {
+          ctx.fillStyle = 'grey';
+          ctx.fillRect(x, y, boxSize, boxSize);
+        }
+
+        // Draw user solution
+        if (box.filled && box.shouldBeFilled && highlightCorrect) {
           ctx.fillStyle = 'green';
           ctx.fillRect(x, y, boxSize, boxSize);
         } else if (box.filled) {
@@ -290,36 +223,54 @@ export const Nonogram = ({width, height, imageMap, highlightCorrect}: NonogramPr
       newSolutionState[boxX][boxY].possiblyFilledBy = [];
     }
 
-    if (newSolutionState[boxX][boxY].filled && imageMap[boxX][boxY]) {
-      newSolutionState[boxX][boxY].isCorrect = true;
-    } else {
-      newSolutionState[boxX][boxY].isCorrect = false;
-    }
-
     setSolutionState(newSolutionState);
-
-    // Draw
-    drawCanvas();
   };
 
-  if (!canvasInitialized) {
-    // Wait for the canvas to be initialized
-    setTimeout(() => {
-      if (calculateDimensions()) {
-        setCanvasInitialized(true);
-      }
-    }, 200);
-  }
-  
+  // Recalculate hints onMounted or if the imageMap changes
   useEffect(() => {
-    if (canvasInitialized) {
+    // Wait for the canvas DOM to be rendered
+    if (isMounted) {
+      const hints = calculateHints(imageMap);
+      setColHints(hints.colHints);
+      setRowHints(hints.rowHints);
+      // // Create a new solver with the current hints
+      // if (solveAutomatically) {
+      //   setSolver(new NonogramSolver(solutionState, hints.colHints, hints.rowHints));
+      // }
+    } else {
+      setIsMounted(true);
+    }
+  }, [isMounted, imageMap]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Recalculate dimensions when the hints change, thereby changing the borders
+  useEffect(() => {
+    if (isMounted) {
+      calculateDimensions();
+    }
+  }, [colHints, rowHints]); // eslint-disable-line react-hooks/exhaustive-deps
+  
+  // Draw the canvas when clicks result in edits to the solution state,
+  // or when the canvas dimensions change.
+  useEffect(() => {
+    if (isMounted) {
       drawCanvas();
     }
-  }, [canvasInitialized, solutionState]);
+  }, [solutionState, dimensionsVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    calculateHints();
-  }, [imageMap]);
+  // // Solve the nonogram automatically
+  // useEffect(() => {
+  //   if (solverProcess) {
+  //     clearInterval(solverProcess);
+  //   }
+  //   if (solver && solveAutomatically) {
+  //     setSolverProcess(setInterval(() => {
+  //       const changed = solver.solveStep();
+  //       if (changed) {
+  //         setSolutionState(solver.solutionState);
+  //       }
+  //     }, 60000))
+  //   }
+  // }, [solver, solveAutomatically]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div
@@ -346,9 +297,9 @@ export const Nonogram = ({width, height, imageMap, highlightCorrect}: NonogramPr
 //   imageMap: PropTypes.arrayOf(PropTypes.arrayOf(PropTypes.bool)),
 // }
 
-Nonogram.defaultProps = {
-  width: 15,
-  height: 15,
-  imageMap: Array(15).fill(Array(15).fill(false)),
-  highlightCorrect: false,
-};
+// Nonogram.defaultProps = {
+//   width: 15,
+//   height: 15,
+//   imageMap: Array(15).fill(Array(15).fill(false)),
+//   highlightCorrect: false,
+// };
